@@ -44,8 +44,7 @@ app.use(express.urlencoded({ extended: true }));
 // FRONTEND
 // ===============================
 
-const frontendPath = path.join(__dirname);
-
+const frontendPath = path.join(__dirname, "..");
 app.use(express.static(frontendPath));
 
 // ===============================
