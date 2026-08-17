@@ -10,6 +10,12 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ADMIN_CHAT_ID
+        sync: false
+      - key: DEFAULT_CHANNEL
+        value: "@Barcha_Kontent"
 databases:
   - name: telegram-zero-db
     plan: free
