@@ -1,25 +1,19 @@
-# Telegram APP — GitHub + Render
+# Telegram APP — Full Global Server Version
 
-Existing UI is preserved. No aiogram and no Python are used.
-
-Stack:
-- Existing HTML/CSS/JS frontend
-- Node.js + Express
+Existing UI/design is preserved. This version adds:
+- Node.js + Express 5
 - Socket.IO real-time messaging
-- PostgreSQL
-- Render Docker deployment
+- PostgreSQL persistence
+- User synchronization
+- Global chat message history
+- Render Blueprint deployment
 
-Deploy:
-1. Upload this project to GitHub.
-2. Render -> New -> Blueprint.
-3. Select the GitHub repository.
-4. Render reads render.yaml and creates the web service + PostgreSQL.
-5. Open the generated Render URL.
+## Deploy
+1. Upload the project contents to GitHub.
+2. Render → New → Blueprint.
+3. Select the repository.
+4. Deploy the Blueprint.
+5. Keep the PostgreSQL database.
+6. Open the generated `.onrender.com` URL.
 
-API:
-GET /api/health
-POST /api/users {"username":"test"}
-GET /api/messages?chat_id=global
-WebSocket: Socket.IO event join_chat / send_message
-
-Note: the original UI is preserved; its existing client-side features still need to be progressively connected to these server endpoints for every feature to become server-backed.
+The backend is in `server/server.js`. The frontend bridge is appended to `index.html` and the existing design is not replaced.

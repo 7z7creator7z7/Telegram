@@ -2918,8 +2918,7 @@ window.sekaiEditable = {
         }
 
       let state = createState();
-      // Expose the existing state object to the server bridge without changing UI logic.
-      Object.defineProperty(window, 'state', { configurable: true, get: () => state, set: (v) => { state = v; } });
+      window.__telegramGetState = () => state;
 
       // DYNAMIC ACCURATE STAR COUNT CALCULATOR FOR ENTITIES
       function calculateEntityStars(chat) {
@@ -3586,20 +3585,23 @@ window.sekaiEditable = {
         const now = new Date();
         const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
 
-        chat.messages.push({
-          id: Date.now(),
-          text: text,
-          sender: 'me',
-          time: timeStr,
-          reactions: {},
-          userReactions: {}
-        });
-
         input.value = '';
         vibrate(50);
         playSfx('sfx-send');
 
-        render();
+        if (window.telegramServer && state.currentUser) {
+          window.telegramServer.send(chat.id, state.currentUser.username, text);
+        } else {
+          chat.messages.push({
+            id: Date.now(),
+            text: text,
+            sender: 'me',
+            time: timeStr,
+            reactions: {},
+            userReactions: {}
+          });
+          render();
+        }
 
         if (chat.username === '@admin') {
           setTimeout(() => {
@@ -4274,8 +4276,28 @@ window.sekaiEditable = {
           INTERESTING_MESSAGES_300.push(`✨ ${idx}. Maxsus qiziqarli ma'lumot va yangilik: Global Telegram tarmog'ida har 30 soniyada unikal va qiziqarli xabarlar yetkazib beriladi!`);
         }
 
-        // Server mode: demo auto-posting is disabled. Messages arrive via Socket.IO.
-
+        setInterval(() => {
+          const randomContent = INTERESTING_MESSAGES_300[Math.floor(Math.random() * INTERESTING_MESSAGES_300.length)];
+          const now = new Date();
+          const timeStr = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+        
+          state.chats.forEach(c => {
+            if (c.type === 'channel' || c.type === 'group') {
+              if (!c.messages) c.messages = [];
+              c.messages.push({
+                id: Date.now() + Math.random(),
+                text: randomContent,
+                sender: 'them',
+                time: timeStr,
+                reactions: { '🔥': 1, '⭐': 1 },
+                userReactions: {}
+              });
+            }
+          });
+          if (state.phase === 'chat' || state.phase === 'main') {
+            render();
+          }
+        }, 30 * 1000);
 
         if (!state.currentUser) {
           state.currentUser = {
@@ -4729,144 +4751,41 @@ window.sekaiEditable = {
   
 
 «body»
-«/tool»<input type="file" accept="image/*" class="hidden">
-<!-- SERVER MODE BRIDGE: keeps the existing UI/design and replaces local-only messaging with API + Socket.IO -->
-<script src="/socket.io/socket.io.js"></script>
+«/tool»<input type="file" accept="image/*" class="hidden"><script src="/socket.io/socket.io.js"></script>
 <script>
 (function () {
-  'use strict';
-  const API = '/api';
-  const TOKEN_KEY = 'telegram_server_token_v1';
-  let socket = null;
-  let bootstrapped = false;
-
-  function token() { return localStorage.getItem(TOKEN_KEY); }
-  function authHeaders() {
-    const t = token();
-    return t ? { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t } : { 'Content-Type': 'application/json' };
+  const socket = io({ transports: ["websocket", "polling"] });
+  let joinedChat = null;
+  function getState(){ return window.__telegramGetState ? window.__telegramGetState() : null; }
+  async function post(url, body){ try { return await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); } catch(e) { return null; } }
+  async function syncUser(){
+    const s=getState(); if(!s || !s.currentUser) return;
+    await post('/api/users',{username:s.currentUser.username,name:s.currentUser.name,avatar:s.currentUser.avatar||null});
   }
-  async function api(path, options={}) {
-    const res = await fetch(API + path, { ...options, headers: { ...authHeaders(), ...(options.headers||{}) } });
-    let data = null; try { data = await res.json(); } catch (_) {}
-    if (!res.ok) throw new Error((data && data.error) || 'Server error');
-    return data;
-  }
-  function setServerToken(t) { if (t) localStorage.setItem(TOKEN_KEY, t); }
-  function normalizeChat(c) {
-    return { ...c, messages: Array.isArray(c.messages) ? c.messages : [], reactions: c.reactions || {}, userReactions: c.userReactions || {} };
-  }
-  function addMessageToLocal(msg) {
-    if (!window.state || !Array.isArray(window.state.chats)) return;
-    let chat = window.state.chats.find(c => String(c.id) === String(msg.chatId));
-    if (!chat) {
-      chat = { id: msg.chatId, name: msg.chatName || 'Chat', username: msg.chatUsername || '', type: msg.chatType || 'private', messages: [] };
-      window.state.chats.push(chat);
-    }
-    chat.messages = chat.messages || [];
-    if (!chat.messages.some(m => String(m.id) === String(msg.id))) {
-      chat.messages.push({ id: msg.id, text: msg.text, sender: msg.senderId === (window.state.currentUser && window.state.currentUser.id) ? 'me' : 'them', time: msg.time, reactions: msg.reactions || {}, userReactions: {} });
-    }
-  }
-  function rerender() { try { if (typeof render === 'function') render(); } catch (_) {} }
-
-  async function connectSocket() {
-    if (!token()) return;
-    socket = io({ auth: { token: token() }, transports: ['websocket','polling'] });
-    socket.on('connect', () => { document.body.dataset.server = 'connected'; });
-    socket.on('disconnect', () => { document.body.dataset.server = 'disconnected'; });
-    socket.on('message:new', msg => { addMessageToLocal(msg); rerender(); });
-    socket.on('chat:new', chat => { if (window.state && !window.state.chats.some(c => String(c.id) === String(chat.id))) { window.state.chats.push(normalizeChat(chat)); rerender(); } });
-  }
-
-  async function bootstrap() {
-    if (!token() || bootstrapped) return;
+  async function syncChat(){
+    const s=getState(); if(!s || !s.activeChatId) return;
+    const chat=s.chats.find(c=>c.id===s.activeChatId); if(!chat) return;
+    if(joinedChat && joinedChat!==chat.id) socket.emit('leave_chat',joinedChat);
+    socket.emit('join_chat',chat.id); joinedChat=chat.id;
     try {
-      const me = await api('/me');
-      const chats = await api('/chats');
-      if (window.state) {
-        window.state.currentUser = me.user;
-        window.state.chats = chats.chats.map(normalizeChat);
-        window.state.phase = 'main';
-        bootstrapped = true;
-        rerender();
+      const r=await fetch('/api/messages?chat_id='+encodeURIComponent(chat.id));
+      const d=await r.json();
+      if(d.ok && Array.isArray(d.messages)){
+        chat.messages=d.messages.map(m=>({id:Number(m.id),text:m.text,sender:m.username===s.currentUser?.username?'me':'them',username:m.username,time:new Date(m.created_at).toLocaleTimeString('uz-UZ',{hour:'2-digit',minute:'2-digit'}),reactions:{},userReactions:{}}));
+        if(typeof window.render==='function') window.render();
       }
-      await connectSocket();
-    } catch (e) {
-      localStorage.removeItem(TOKEN_KEY);
-      document.body.dataset.server = 'error';
-    }
+    } catch(e){}
   }
-
-  async function registerAfterUi() {
-    try {
-      const u = window.state && window.state.currentUser;
-      if (!u || !u.username) return;
-      const data = await api('/auth/register', { method:'POST', body: JSON.stringify({ username:u.username, name:u.name, avatar:u.avatar }) });
-      setServerToken(data.token);
-      if (window.state) window.state.currentUser = data.user;
-      bootstrapped = true;
-      const chats = await api('/chats');
-      if (window.state) window.state.chats = chats.chats.map(normalizeChat);
-      rerender();
-      await connectSocket();
-      showToast('☁️ Serverga ulandingiz!');
-    } catch (e) {
-      showToast('❌ Server: ' + e.message);
-    }
-  }
-
-  // Registration: allow the existing UI handler to run, then create the real account server-side.
-  document.addEventListener('click', function(e) {
-    if (e.target && e.target.closest('#btn-register-action')) setTimeout(registerAfterUi, 0);
-  }, false);
-
-  // Sending: capture the existing button and route it through the server instead of local-only logic.
-  document.addEventListener('click', async function(e) {
-    const btn = e.target && e.target.closest('#btn-send-message');
-    if (!btn || !token() || !window.state || !window.state.activeChatId) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    const input = document.getElementById('input-message-text');
-    const text = input && input.value.trim();
-    if (!text) return;
-    try {
-      input.value = '';
-      const result = await api('/messages', { method:'POST', body: JSON.stringify({ chatId: String(window.state.activeChatId), text }) });
-      addMessageToLocal(result.message);
-      rerender();
-      if (typeof vibrate === 'function') vibrate(50);
-      if (typeof playSfx === 'function') playSfx('sfx-send');
-    } catch (err) { showToast('❌ ' + err.message); }
-  }, true);
-
-  // Enter key follows the same server path.
-  document.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter' || !e.target || e.target.id !== 'input-message-text' || !token()) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    document.getElementById('btn-send-message')?.click();
-  }, true);
-
-  // Server-side creation for groups/channels while retaining the current modal.
-  document.addEventListener('click', async function(e) {
-    const btn = e.target && e.target.closest('#modal-submit-btn');
-    if (!btn || !token()) return;
-    e.preventDefault(); e.stopImmediatePropagation();
-    const name = document.getElementById('create-name-input')?.value.trim();
-    let username = document.getElementById('create-username-input')?.value.trim() || '';
-    if (!name) return showToast('❌ Nom kiriting');
-    if (!username.startsWith('@')) username = '@' + username;
-    try {
-      const type = window.state?.createType === 'group' ? 'group' : 'channel';
-      const result = await api('/chats', { method:'POST', body: JSON.stringify({ type, name, username }) });
-      window.state.chats.push(normalizeChat(result.chat));
-      const modal = document.getElementById('modal-create'); modal?.classList.add('hidden'); modal?.classList.remove('flex');
-      rerender();
-      showToast('✅ Serverda yaratildi');
-    } catch (err) { showToast('❌ ' + err.message); }
-  }, true);
-
-  window.telegramServer = { api, logout: () => { localStorage.removeItem(TOKEN_KEY); location.reload(); }, bootstrap };
-  window.addEventListener('DOMContentLoaded', () => setTimeout(bootstrap, 50));
+  socket.on('connect',()=>{ syncUser(); syncChat(); });
+  socket.on('server_message',(m)=>{
+    const s=getState(); if(!s || !m) return;
+    const chat=s.chats.find(c=>c.id===m.chat_id); if(!chat) return;
+    if(chat.messages.some(x=>String(x.id)===String(m.id))) return;
+    chat.messages.push({id:Number(m.id),text:m.text,sender:m.username===s.currentUser?.username?'me':'them',username:m.username,time:new Date(m.created_at).toLocaleTimeString('uz-UZ',{hour:'2-digit',minute:'2-digit'}),reactions:{},userReactions:{}});
+    if(typeof window.render==='function' && s.activeChatId===m.chat_id && s.phase==='chat') window.render();
+  });
+  window.telegramServer={socket,send:(chat_id,username,text)=>socket.emit('send_message',{chat_id,username,text}),syncChat};
+  setInterval(()=>{const s=getState(); if(s?.currentUser) syncUser(); if(s?.activeChatId!==joinedChat) syncChat();},1500);
 })();
 </script>
-
 </body></html>
